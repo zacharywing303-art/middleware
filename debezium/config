@@ -1,0 +1,48 @@
+# ---- Sink: Kafka (use internal listener) ----
+debezium.sink.type=kafka
+debezium.sink.kafka.producer.bootstrap.servers=kafka:9092
+debezium.format.key=json
+debezium.format.value=json
+debezium.sink.kafka.wait.message.delivery.timeout.ms=30000
+
+# Explicit serializers so KafkaProducer can start
+debezium.sink.kafka.producer.key.serializer=org.apache.kafka.common.serialization.StringSerializer
+debezium.sink.kafka.producer.value.serializer=org.apache.kafka.common.serialization.StringSerializer
+
+# ---- Source: PostgreSQL ----
+debezium.source.connector.class=io.debezium.connector.postgresql.PostgresConnector
+debezium.source.database.hostname=postgres
+debezium.source.database.port=5432
+debezium.source.database.user=dbz
+debezium.source.database.password=dbzpass
+debezium.source.database.dbname=payments
+debezium.source.plugin.name=pgoutput
+
+# Publication/slot (auto-create for specific tables; no superuser needed)
+debezium.source.publication.name=dbz_publication
+debezium.source.publication.autocreate.mode=disabled
+debezium.source.table.include.list=public.outbox
+debezium.source.message.key.columns=public.outbox:id
+
+# Slot name (persisted)
+debezium.source.slot.name=dbz_payments
+
+# Topic prefix -> topics will be: app.public.payments
+debezium.source.topic.prefix=app
+
+# Snapshot + throughput tuning (safe defaults)
+debezium.source.snapshot.mode=initial
+debezium.source.snapshot.fetch.size=1000
+debezium.source.snapshot.max.threads=1
+debezium.source.max.batch.size=512
+debezium.source.max.queue.size=4096
+debezium.source.poll.interval.ms=1000
+
+# Offsets & schema history stored on a mounted volume
+debezium.source.offset.storage.file.filename=data/offsets.dat
+debezium.source.schema.history.internal=io.debezium.storage.file.history.FileSchemaHistory
+debezium.source.schema.history.internal.file.filename=data/schemahistory.dat
+
+# (Optional) quieter payloads
+debezium.source.tombstones.on.delete=false
+debezium.source.include.schema.changes=false

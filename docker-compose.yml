@@ -1,0 +1,165 @@
+version: "3.9"
+
+services:
+  jobs:
+    build: ./jobs
+    container_name: jobs
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - kafka
+      - debezium
+    ports:
+      - "3002:3002"
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_GROUP_ID=payment-checkout-group
+      - SVIX_BASE_URL=http://svix:8071
+      - SVIX_AUTH_TOKEN=change-me-please-32+chars
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3002/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  api:
+    build: .
+    container_name: api
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  postgres:
+    image: postgres:16
+    container_name: pg
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: 123456
+      POSTGRES_DB: payments
+    ports:
+      - "5432:5432"
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+      -c listen_addresses=*
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d payments"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: kafka
+    environment:
+      - KAFKA_ENABLE_KRAFT=yes
+      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_KRAFT_CLUSTER_ID=abcdefghijklmnopqrstuvwx
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CFG_LISTENERS=INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=1
+    ports:
+      - "9094:9094"   # for host tools; containers use kafka:9092 internally
+    volumes:
+      - kafka_data:/bitnami/kafka
+    restart: unless-stopped
+    depends_on:
+      - postgres
+
+  debezium:
+    image: quay.io/debezium/server:3.2
+    container_name: debezium-server
+    environment:
+      - QUARKUS_LOG_LEVEL=INFO
+      - JAVA_TOOL_OPTIONS=-Xms256m -Xmx512m -XX:+UseG1GC
+    volumes:
+      - ./debezium/config:/debezium/config/application.properties:ro
+      - debezium_data:/debezium/data
+    depends_on:
+      - kafka
+      - postgres
+    ports:
+      - "8080:8080"   # health endpoint
+    restart: unless-stopped
+
+  # Optional: nice web UI to see topics/messages
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    ports:
+      - "8081:8080"
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: redis
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  svix:
+    image: svix/svix-server:latest
+    container_name: svix
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8071:8071"   # Svix API
+    environment:
+      # Point Svix to Postgres; EITHER use payments DB (simple) or create a separate 'svix' DB via init SQL.
+      SVIX_DB_DSN: postgres://root:123456@postgres:5432/payments
+      SVIX_JWT_SECRET: "change-me-please-32+chars"
+      SVIX_QUEUE_TYPE: "redis"
+      SVIX_REDIS_DSN: redis://redis:6379
+      SVIX_DB_POOL_MAX_SIZE: "20"
+      SVIX_REDIS_POOL_MAX_SIZE: "50"
+      SVIX_ENABLE_PROMETHEUS: "true"
+      # allow local testing to LAN
+      SVIX_WHITELIST_SUBNETS: '["127.0.0.1/32","10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"]'
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8071/health/"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+volumes:
+  pg_data:
+  kafka_data:
+  debezium_data:
+  redis_data:
